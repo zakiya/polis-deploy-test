@@ -1,0 +1,271 @@
+# Railway deployment Dockerfile
+# This combines the main web services (server, nginx-proxy, file-server, client-participation-alpha)
+# into a single container using supervisord to manage multiple processes
+
+FROM docker.io/node:24-alpine AS client-admin
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /app
+
+COPY client-admin/package*.json ./
+RUN npm ci --production=false
+
+COPY client-admin/. .
+
+ARG ADMIN_UIDS
+ARG AUTH_AUDIENCE
+ARG AUTH_CLIENT_ID
+ARG AUTH_ISSUER
+ARG AUTH_NAMESPACE
+ENV ADMIN_UIDS=${ADMIN_UIDS}
+ENV AUTH_AUDIENCE=${AUTH_AUDIENCE}
+ENV AUTH_CLIENT_ID=${AUTH_CLIENT_ID}
+ENV AUTH_ISSUER=${AUTH_ISSUER}
+ENV AUTH_NAMESPACE=${AUTH_NAMESPACE}
+
+RUN npm run build:prod
+
+FROM docker.io/node:24-alpine AS client-participation
+
+ARG EMBED_SERVICE_HOSTNAME
+ARG GA_TRACKING_ID
+ARG OIDC_CACHE_KEY_PREFIX
+ARG OIDC_CACHE_KEY_ID_TOKEN_SUFFIX
+ENV EMBED_SERVICE_HOSTNAME=${EMBED_SERVICE_HOSTNAME}
+ENV GA_TRACKING_ID=${GA_TRACKING_ID}
+ENV OIDC_CACHE_KEY_PREFIX=${OIDC_CACHE_KEY_PREFIX}
+ENV OIDC_CACHE_KEY_ID_TOKEN_SUFFIX=${OIDC_CACHE_KEY_ID_TOKEN_SUFFIX}
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /app
+
+COPY client-participation/package*.json ./
+RUN npm ci --production=false
+
+COPY client-participation/. .
+
+RUN npm run build:prod
+
+FROM docker.io/node:24-alpine AS client-report
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /app
+
+RUN apk add git
+
+COPY client-report/package*.json ./
+RUN npm ci --production=false
+
+COPY client-report/. .
+
+ARG GIT_HASH
+ENV GIT_HASH=${GIT_HASH:-placeholder}
+
+ARG AUTH_AUDIENCE
+ARG AUTH_NAMESPACE
+ARG AUTH_CLIENT_ID
+ARG AUTH_ISSUER
+ARG DD_APPLICATION_ID
+ARG DD_CLIENT_TOKEN
+ARG DD_SITE
+ARG SERVICE_URL
+ENV AUTH_AUDIENCE=${AUTH_AUDIENCE}
+ENV AUTH_CLIENT_ID=${AUTH_CLIENT_ID}
+ENV AUTH_NAMESPACE=${AUTH_NAMESPACE}
+ENV AUTH_ISSUER=${AUTH_ISSUER}
+ENV DD_APPLICATION_ID=${DD_APPLICATION_ID}
+ENV DD_CLIENT_TOKEN=${DD_CLIENT_TOKEN}
+ENV DD_SITE=${DD_SITE}
+ENV SERVICE_URL=${SERVICE_URL}
+
+RUN npm run build:prod
+
+FROM docker.io/node:24-alpine AS client-participation-alpha
+
+ARG PUBLIC_SERVICE_URL
+ARG INTERNAL_SERVICE_URL
+ARG OIDC_CACHE_KEY_PREFIX
+ARG OIDC_CACHE_KEY_ID_TOKEN_SUFFIX
+ARG PUBLIC_AUTH_NAMESPACE
+
+ENV PUBLIC_SERVICE_URL=$PUBLIC_SERVICE_URL
+ENV INTERNAL_SERVICE_URL=$INTERNAL_SERVICE_URL
+ENV PUBLIC_OIDC_CACHE_KEY_PREFIX=$OIDC_CACHE_KEY_PREFIX
+ENV PUBLIC_OIDC_CACHE_KEY_ID_TOKEN_SUFFIX=$OIDC_CACHE_KEY_ID_TOKEN_SUFFIX
+ENV PUBLIC_AUTH_NAMESPACE=$PUBLIC_AUTH_NAMESPACE
+
+WORKDIR /app
+
+COPY client-participation-alpha/package*.json ./
+RUN npm install
+COPY client-participation-alpha/. .
+
+RUN npm run build
+
+FROM docker.io/node:24-alpine AS file-server
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /app
+
+COPY file-server/package*.json ./
+RUN npm ci
+
+COPY file-server/. .
+
+RUN mkdir /app/build
+COPY --from=client-admin /app/build/ /app/build/
+COPY --from=client-participation /app/dist/ /app/build/
+COPY --from=client-report /app/dist/ /app/build/
+
+FROM docker.io/node:24-alpine AS server-base
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+WORKDIR /app
+
+RUN apk add --no-cache python3 py3-pip libpq-dev
+
+RUN apk add --no-cache --virtual .build g++ make python3
+
+COPY server/package*.json ./
+
+EXPOSE 5000
+
+FROM server-base AS server
+
+RUN npm ci --production=false
+
+RUN apk add --no-cache openssl ca-certificates
+RUN apk del .build
+
+COPY server/. .
+
+RUN npm run build
+
+# Final stage: Combine all services with supervisord
+FROM docker.io/node:24-alpine
+
+# Install supervisord, nginx, and gettext (for envsubst)
+RUN apk add --no-cache \
+    supervisor \
+    nginx \
+    python3 \
+    py3-pip \
+    libpq-dev \
+    openssl \
+    ca-certificates \
+    gettext
+
+# Install supervisord
+RUN pip3 install supervisor
+
+WORKDIR /app
+
+# Copy server
+COPY --from=server /app /app/server
+WORKDIR /app/server
+
+# Copy file-server
+COPY --from=file-server /app /app/file-server
+
+# Copy client-participation-alpha
+COPY --from=client-participation-alpha /app /app/client-participation-alpha
+
+# Copy nginx configuration for Railway
+COPY file-server/nginx/nginx.railway.conf /etc/nginx/conf.d/default.conf.template
+COPY file-server/nginx/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Create JWT keys directory (keys will be mounted or created from env vars)
+RUN mkdir -p /app/server/keys
+
+# Create startup script to handle Railway's PORT variable
+RUN cat > /start.sh <<'EOF'
+#!/bin/sh
+set -e
+
+# Railway sets PORT env var, nginx config template already uses it via envsubst
+# Process the nginx template with environment variables
+export API_SERVER_PORT=${API_SERVER_PORT:-5000}
+envsubst '${API_SERVER_PORT} ${PORT}' < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf
+
+# If JWT keys are provided as base64 env vars, decode them
+if [ -n "$JWT_PRIVATE_KEY" ] && [ ! -f /app/server/keys/jwt-private.pem ]; then
+  echo "$JWT_PRIVATE_KEY" | base64 -d > /app/server/keys/jwt-private.pem
+  chmod 600 /app/server/keys/jwt-private.pem
+fi
+
+if [ -n "$JWT_PUBLIC_KEY" ] && [ ! -f /app/server/keys/jwt-public.pem ]; then
+  echo "$JWT_PUBLIC_KEY" | base64 -d > /app/server/keys/jwt-public.pem
+  chmod 644 /app/server/keys/jwt-public.pem
+fi
+
+# Start supervisord
+exec /usr/bin/supervisord -c /etc/supervisor.d/supervisord.ini
+EOF
+RUN chmod +x /start.sh
+
+# Create supervisord configuration
+RUN mkdir -p /etc/supervisor.d
+RUN cat > /etc/supervisor.d/supervisord.ini <<'EOF'
+[supervisord]
+nodaemon=true
+user=root
+
+[program:server]
+command=npm run serve
+directory=/app/server
+autostart=true
+autorestart=true
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+environment=NODE_ENV="production"
+
+[program:file-server]
+command=npm run serve
+directory=/app/file-server
+autostart=true
+autorestart=true
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+environment=PORT="8080",NODE_ENV="production"
+
+[program:client-participation-alpha]
+command=node dist/server/entry.mjs
+directory=/app/client-participation-alpha
+autostart=true
+autorestart=true
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+
+[program:nginx]
+command=/docker-entrypoint.sh nginx -g "daemon off;"
+autostart=true
+autorestart=true
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+EOF
+
+# Expose port (Railway will set PORT env var)
+EXPOSE 80
+
+# Use startup script
+CMD ["/start.sh"]
+

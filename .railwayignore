@@ -1,0 +1,60 @@
+# Railway ignore file - exclude unnecessary files from deployment
+
+# Development files
+docker-compose.dev.yml
+docker-compose.test.yml
+*.md
+!README.md
+
+# Test files
+e2e/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+.circleci/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (will be rebuilt)
+**/node_modules/
+**/dist/
+**/build/
+*.log
+
+# CDK infrastructure (not needed for Railway)
+cdk/
+
+# Scripts (not needed in container)
+scripts/
+scripts-euro/
+bin/
+
+# Local development
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# Other
+*.dump
+prodclone.dump
+
