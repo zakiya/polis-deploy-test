@@ -155,6 +155,7 @@ RUN npm run build
 FROM docker.io/node:24-alpine
 
 # Install supervisord, nginx, and gettext (for envsubst)
+# Note: supervisor is installed via apk, not pip, to avoid externally-managed-environment error
 RUN apk add --no-cache \
     supervisor \
     nginx \
@@ -164,9 +165,6 @@ RUN apk add --no-cache \
     openssl \
     ca-certificates \
     gettext
-
-# Install supervisord
-RUN pip3 install supervisor
 
 WORKDIR /app
 
