@@ -30,12 +30,12 @@ dotenv.config();
 
 const databaseUrl = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/polis-dev';
 const skipConfirm = process.env.SKIP_CONFIRM === 'true';
-console.log(databaseUrl);
 
 /**
  * Safety check to prevent resetting production databases
  */
 function isSafeDatabase(dbUrl) {
+  console.log(dbUrl);
   if (!dbUrl) {
     console.error('\x1b[31m%s\x1b[0m', '❌ Error: No DATABASE_URL provided.');
     return false;
@@ -70,7 +70,7 @@ function parseDatabaseUrl(dbUrl) {
   const match = dbUrl.match(/postgres:\/\/([^:]+):([^@]+)@([^:]+):(\d+)\/([^?]+)/);
 
   if (!match) {
-    throw new Error('Invalid DATABASE_URL format');
+    throw new Error('Invalid DATABASE_URL format' + dbUrl);
   }
 
   return {
@@ -90,6 +90,7 @@ async function resetDatabase() {
 
   // Safety check
   if (!isSafeDatabase(databaseUrl)) {
+    console.log(databaseUrl);
     process.exit(1);
   }
 
