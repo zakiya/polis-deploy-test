@@ -12,7 +12,8 @@ export default defineConfig({
     mode: 'standalone',
   }),
   server: {
-    host: '0.0.0.0'
+    host: '0.0.0.0',
+    port: parseInt(process.env.ASTRO_PORT || '4321')
   },
   integrations: [
     react({
