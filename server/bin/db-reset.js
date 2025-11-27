@@ -30,6 +30,7 @@ dotenv.config();
 
 const databaseUrl = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/polis-dev';
 const skipConfirm = process.env.SKIP_CONFIRM === 'true';
+console.log(databaseUrl);
 
 /**
  * Safety check to prevent resetting production databases
