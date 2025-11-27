@@ -154,7 +154,7 @@ RUN npm run build
 # Final stage: Combine all services with supervisord
 FROM docker.io/node:24-alpine
 
-# Install supervisord, nginx, and gettext (for envsubst)
+# Install supervisord, nginx, gettext (for envsubst), and postgresql-client (for migrations)
 # Note: supervisor is installed via apk, not pip, to avoid externally-managed-environment error
 RUN apk add --no-cache \
     supervisor \
@@ -162,6 +162,7 @@ RUN apk add --no-cache \
     python3 \
     py3-pip \
     libpq-dev \
+    postgresql-client \
     openssl \
     ca-certificates \
     gettext
